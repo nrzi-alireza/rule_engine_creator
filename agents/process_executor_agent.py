@@ -62,6 +62,19 @@ class ProcessExecutorAgent(WorkflowEngine):
             ],
         )
 
+        self.restart_exec_nodes()
+
+    def restart_exec_nodes(self) -> None:
+        self.set_start_nodes(
+            [
+                ExecutionNode(
+                    function=self.chat_with_user,
+                    args=(self,),
+                    kwargs={"system_prompt": self.create_system_prompt()},
+                )
+            ],
+        )
+
     def is_started(self) -> bool:
         return self.state.started
 
@@ -72,6 +85,7 @@ class ProcessExecutorAgent(WorkflowEngine):
         self.state.started = False
         self.state.current_step = -1
         self.state.messages_history = []
+        self.restart_exec_nodes()
 
     def before_step(self, external_input: str, state: State) -> None:
         state.messages_history.append({"role": "user", "content": external_input})
