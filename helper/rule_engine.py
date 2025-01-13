@@ -1,9 +1,9 @@
 import json
 import logging
 from datetime import datetime
-from html import entities
 from typing import Any
 
+import pandas as pd
 import yaml
 from pydantic import BaseModel
 
@@ -40,6 +40,19 @@ class Rule(BaseModel):
     preconditions: str
     action: str
     name: str
+
+
+class Process(BaseModel):
+    class Step(BaseModel):
+        order: int
+        description: str
+        detailed_instructions: str
+        related_entities_ids: list[int]
+
+    id: int | None
+    name: str
+    steps: list[Step]
+    process_flow: str
 
 
 class SimpleRulesEngine:
@@ -110,6 +123,17 @@ class SimpleRulesEngine:
                 "related_entities TEXT NOT NULL",
                 "preconditions TEXT NOT NULL",
                 "action TEXT NOT NULL",
+            ],
+        )
+
+        # Process
+        self.db.create_table(
+            table_name="Process",
+            columns=[
+                "id INTEGER PRIMARY KEY AUTOINCREMENT",
+                "name TEXT NOT NULL",
+                "steps TEXT NOT NULL",
+                "process_flow TEXT NOT NULL",
             ],
         )
 
@@ -268,6 +292,67 @@ class SimpleRulesEngine:
                 ),
             )
 
+    def get_processes(self) -> list[Process]:
+        result = []
+        db_result = self.db.fetch_all("SELECT id, name, steps, process_flow FROM Process")
+        for row in db_result:
+            steps_dict = json.loads(row[2])
+            steps = [Process.Step(**step) for step in steps_dict]
+            result.append(Process(id=row[0], name=row[1], steps=steps, process_flow=row[3]))
+        return result
+
+    def get_process_by_id(self, process_id: int) -> Process:
+        row = self.db.fetch_all("SELECT id, name, steps, process_flow FROM Process Where id=?", (process_id,))[0]
+        steps_dict = json.loads(row[2])
+        steps = [Process.Step(**step) for step in steps_dict]
+        return Process(id=row[0], name=row[1], steps=steps, process_flow=row[3])
+
+    def get_processes_df(self) -> pd.DataFrame:
+        processes = self.get_processes()
+
+        # Create a list to store flattened process data
+        rows = []
+
+        for process in processes:
+            # Create base process info
+            base_info = {
+                "process_id": process.id,
+                "process_name": process.name,
+                "process_flow": process.process_flow,
+                "total_steps": len(process.steps),
+            }
+
+            # Add each step as a separate row
+            for step in process.steps:
+                row = base_info.copy()
+                row.update(
+                    {
+                        "step_order": step.order,
+                        "step_description": step.description,
+                        "detailed_instructions": step.detailed_instructions,
+                        "related_entities": ",".join(map(str, step.related_entities_ids)),
+                    }
+                )
+                rows.append(row)
+
+        return pd.DataFrame(rows)
+
+    def upsert_process(self, process: Process) -> None:
+        existing_process = None
+        if process.id:
+            existing_process = self.db.fetch_all("SELECT id FROM Process WHERE id = ?", (process.id,))
+
+        if existing_process:  # update
+            self.db.execute_query(
+                "UPDATE Process SET name = ?, steps = ?, process_flow = ? WHERE id = ?",
+                (process.name, json.dumps([s.model_dump() for s in process.steps]), process.process_flow, process.id),
+            )
+        else:
+            self.db.execute_query(
+                "INSERT INTO Process (name, steps, process_flow) VALUES (?, ?, ?)",
+                (process.name, json.dumps([s.model_dump() for s in process.steps]), process.process_flow),
+            )
+
     def create_system_prompt(self) -> str:
         system_prompt_template: str = self.prompts["system_prompt"]
         return system_prompt_template.format(
@@ -279,14 +364,16 @@ class SimpleRulesEngine:
             fact_schema=json.dumps(Fact.model_json_schema(), indent=4),
             action_schema=json.dumps(Action.model_json_schema(), indent=4),
             rule_schema=json.dumps(Rule.model_json_schema(), indent=4),
+            process_schema=json.dumps(Process.model_json_schema(), indent=4),
             # current list of each type
             entities=json.dumps([e.model_dump() for e in self.get_entities()], indent=4),
             facts=json.dumps([f.model_dump() for f in self.get_facts()], indent=4),
             actions=json.dumps([a.model_dump() for a in self.get_actions()], indent=4),
             rules=json.dumps([r.model_dump() for r in self.get_rules()], indent=4),
+            processes=json.dumps([p.model_dump() for p in self.get_processes()], indent=4),
         )
 
-    def extract_and_upsert_entity(self, messages_history: list[dict[str, str]]) -> None:
+    def extract_and_upsert_entity(self, messages_history: list[dict[str, str]]) -> dict[str, str]:
         class Output(BaseModel):
             class EntityType(BaseModel):
                 id: int
@@ -311,6 +398,8 @@ class SimpleRulesEngine:
             response_format=Output,
         )
 
+        results: dict[str, str] = {}
+
         for new_entity in llm_response.entities_to_create:
             try:
                 self.upsert_entity(
@@ -322,8 +411,10 @@ class SimpleRulesEngine:
                         ),
                     )
                 )
+                results[new_entity.name] = f"entity {new_entity.name} created successfully"
             except Exception as e:
                 logger.warning(f"Error inserting entity {new_entity.name} - {new_entity.attributes_json_schema}: {e}")
+                results[new_entity.name] = f"error in creating entity {new_entity.name}: {e}"
 
         for updated_entity in llm_response.entities_to_update:
             try:
@@ -336,12 +427,16 @@ class SimpleRulesEngine:
                         ),
                     )
                 )
+                results[updated_entity.name] = f"entity {updated_entity.name} updated successfully"
             except Exception as e:
+                results[updated_entity.name] = f"error in updating entity {updated_entity.name}: {e}"
                 logger.warning(
                     f"Error updating entity {updated_entity.name} - {updated_entity.attributes_json_schema}: {e}"
                 )
 
-    def extract_and_upsert_facts(self, messages_history: list[dict[str, str]]) -> None:
+        return results
+
+    def extract_and_upsert_facts(self, messages_history: list[dict[str, str]]) -> dict[str, str]:
         class Output(BaseModel):
             class FactType(BaseModel):
                 id: int
@@ -369,6 +464,8 @@ class SimpleRulesEngine:
         )
 
         # TODO: check with entity schema
+        results: dict[str, str] = {}
+
         for new_fact in llm_response.entities_to_create:
             try:
                 self.upsert_fact(
@@ -381,7 +478,9 @@ class SimpleRulesEngine:
                         ),
                     )
                 )
+                results[new_fact.name] = f"fact {new_fact.name} created successfully"
             except Exception as e:
+                results[new_fact.name] = f"error in creating fact {new_fact.name}: {e}"
                 logger.warning(f"Error inserting fact {new_fact.name} - {new_fact.attributes}: {e}")
 
         for updated_fact in llm_response.entities_to_update:
@@ -396,10 +495,14 @@ class SimpleRulesEngine:
                         ),
                     )
                 )
+                results[updated_fact.name] = f"fact {updated_fact.name} updated successfully"
             except Exception as e:
+                results[updated_fact.name] = f"error in updating fact {updated_fact.name}: {e}"
                 logger.warning(f"Error updating fact '{updated_fact.name}' - {updated_fact.attributes}: {e}")
 
-    def extract_and_upsert_actions(self, messages_history: list[dict[str, str]]) -> None:
+        return results
+
+    def extract_and_upsert_actions(self, messages_history: list[dict[str, str]]) -> dict[str, str]:
         class Output(BaseModel):
             class ActionType(BaseModel):
                 id: int
@@ -426,6 +529,8 @@ class SimpleRulesEngine:
             response_format=Output,
         )
 
+        results: dict[str, str] = {}
+
         for new_action in llm_response.actions_to_create:
             try:
                 self.upsert_action(
@@ -437,7 +542,9 @@ class SimpleRulesEngine:
                         output_json_schema=json.loads(new_action.output_json_schema),
                     ),
                 )
+                results[new_action.name] = f"action {new_action.name} created successfully"
             except Exception as e:
+                results[new_action.name] = f"error in creating action {new_action.name}: {e}"
                 logger.warning(f"Error inserting action {new_action.name} - {new_action.description}: {e}")
 
         for updated_action in llm_response.actions_to_update:
@@ -451,10 +558,14 @@ class SimpleRulesEngine:
                         output_json_schema=json.loads(updated_action.output_json_schema),
                     )
                 )
+                results[updated_action.name] = f"action {updated_action.name} updated successfully"
             except Exception as e:
+                results[updated_action.name] = f"error in updating action {updated_action.name}: {e}"
                 logger.warning(f"Error updating action '{updated_action.name}' - {updated_action.attributes}: {e}")
 
-    def extract_and_upsert_rules(self, messages_history: list[dict[str, str]]) -> None:
+        return results
+
+    def extract_and_upsert_rules(self, messages_history: list[dict[str, str]]) -> dict[str, str]:
         class Output(BaseModel):
             class RuleType(BaseModel):
                 id: int
@@ -483,6 +594,8 @@ class SimpleRulesEngine:
             response_format=Output,
         )
 
+        results: dict[str, str] = {}
+
         for new_rule in llm_response.rules_to_create:
             try:
                 self.upsert_rule(
@@ -494,7 +607,9 @@ class SimpleRulesEngine:
                         name=new_rule.name,
                     ),
                 )
+                results[new_rule.name] = f"rule {new_rule.name} created successfully"
             except Exception as e:
+                results[new_rule.name] = f"error in creating rule {new_rule.name}: {e}"
                 logger.warning(
                     f"Error inserting rule {new_rule.name} - Action: {new_rule.action} - Entity: {new_rule.related_entities} - {new_rule.preconditions}: {e}"
                 )
@@ -510,7 +625,58 @@ class SimpleRulesEngine:
                         name=updated_rule.name,
                     )
                 )
+                results[updated_rule.name] = f"rule {updated_rule.name} updated successfully"
             except Exception as e:
+                results[updated_rule.name] = f"error in updating rule {updated_rule.name}: {e}"
                 logger.warning(
                     f"Error updating rule '{updated_rule.name}' - Action: {updated_rule.action} - Entity: {updated_rule.related_entities} - {updated_rule.preconditions}: {e}"
                 )
+
+        return results
+
+    def extract_and_upsert_processes(self, messages_history: list[dict[str, str]]) -> dict[str, str]:
+        class Output(BaseModel):
+            reason_to_create_new_processes: str
+            processes_to_create: list[Process]
+
+            reason_to_update_existing_processes: str
+            processes_to_update: list[Process]
+
+        instruction_prompt_template: str = self.prompts["extract_and_upsert_processes"]
+        instruction_prompt = instruction_prompt_template.format(
+            entities=json.dumps([e.model_dump() for e in self.get_entities()], indent=4),
+            actions=json.dumps([a.model_dump() for a in self.get_actions()], indent=4),
+            processes=json.dumps([p.model_dump() for p in self.get_processes()], indent=4),
+        )
+
+        llm_response: Output = structured_output(
+            system_prompt=self.create_system_prompt(),
+            user_prompt=instruction_prompt,
+            messages_history=messages_history,
+            response_format=Output,
+        )
+
+        results: dict[str, str] = {}
+
+        for new_process in llm_response.processes_to_create:
+            try:
+                self.upsert_process(
+                    Process(
+                        id=0,
+                        name=new_process.name,
+                        steps=new_process.steps,
+                        process_flow=new_process.process_flow,
+                    )
+                )
+                results[new_process.name] = f"process {new_process.name} created successfully"
+            except Exception as e:
+                results[new_process.name] = f"error in creating process {new_process.name}: {e}"
+
+        for updated_process in llm_response.processes_to_update:
+            try:
+                self.upsert_process(updated_process)
+                results[updated_process.name] = f"process {updated_process.name} updated successfully"
+            except Exception as e:
+                results[updated_process.name] = f"error in updating process {updated_process.name}: {e}"
+
+        return results

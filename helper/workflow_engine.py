@@ -9,7 +9,6 @@ from pydantic import BaseModel, ConfigDict, Field
 
 class InputNode(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    pass
 
 
 class ExecutionNode(BaseModel):
@@ -36,7 +35,7 @@ class State(BaseModel):
 
 class WorkflowEngine:
     def __init__(self, state: State):
-        self.state = state
+        self.state: State = state
         self.execution_queue = deque()
 
     def set_start_nodes(self, start_nodes: list[ExecutionNode]) -> None:

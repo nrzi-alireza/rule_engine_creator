@@ -1,13 +1,13 @@
 import json
 import logging
 from datetime import datetime
-from email import message
 
+import pandas as pd
 import yaml
 
 from helper.llm import stream_llm
 from helper.openai_function import openai_function
-from helper.rule_engine import Action, Entity, Fact, Rule, SimpleRulesEngine
+from helper.rule_engine import Action, Entity, Fact, Process, Rule, SimpleRulesEngine
 from helper.workflow_engine import (
     ExecutionNode,
     InputNode,
@@ -30,7 +30,7 @@ def extract_and_upsert_entity(message: str):
     message
         Aggregated message from the user and assistant into a single string that contains all the messages related to the entities
     """
-    return f"Successfully added entitis from {message}"
+    pass
 
 
 @openai_function
@@ -44,7 +44,7 @@ def extract_and_upsert_facts(message: str):
     message
         Aggregated message from the user and assistant into a single string that contains all the messages related to the facts and its related entity
     """
-    return f"Successfully added facts from {message}"
+    pass
 
 
 @openai_function
@@ -58,7 +58,7 @@ def extract_and_upsert_actions(message: str):
     message
         Aggregated message from the user and assistant into a single string that contains all the messages related to the action description, its inputs and output schema
     """
-    return f"Successfully added actions from {message}"
+    pass
 
 
 @openai_function
@@ -73,7 +73,21 @@ def extract_and_upsert_rules(message: str):
     message
         Aggregated message from the user and assistant into a single string that contains all the messages related to the rule description, its relation to related entity and actions
     """
-    return f"Successfully added rules from {message}"
+    pass
+
+
+@openai_function
+def extract_and_upsert_processes(message: str):
+    """
+    Extract and upsert processes from the user's and assistant's messages
+    Process is a sequence of actions (or an algorithm) that are performed in a specific order to achieve a desired outcome.
+
+    Parameters
+    ----------
+    message
+        Aggregated message from the user and assistant into a single,detailed and possibly long description that contains all the messages related to the process description, its relation to related entity, details of each steps and thier needed information, etc.
+    """
+    pass
 
 
 class RuleEngineCreatorState(State):
@@ -125,6 +139,12 @@ class RuleEngineCreatorAgent(WorkflowEngine):
     def get_rules(self) -> list[Rule]:
         return self.state.rule_engine.get_rules()
 
+    def get_processes(self) -> list[Process]:
+        return self.state.rule_engine.get_processes()
+
+    def get_processes_df(self) -> pd.DataFrame:
+        return self.state.rule_engine.get_processes_df()
+
     def create_system_prompt(self) -> str:
         system_prompt_template: str = self.assistant_prompts["system_prompt"]
         return system_prompt_template.format(
@@ -136,11 +156,13 @@ class RuleEngineCreatorAgent(WorkflowEngine):
             fact_schema=json.dumps(Fact.model_json_schema(), indent=4),
             action_schema=json.dumps(Action.model_json_schema(), indent=4),
             rule_schema=json.dumps(Rule.model_json_schema(), indent=4),
+            process_schema=json.dumps(Process.model_json_schema(), indent=4),
             # current list of each type
             entities=json.dumps([e.model_dump() for e in self.state.rule_engine.get_entities()], indent=4),
             facts=json.dumps([f.model_dump() for f in self.state.rule_engine.get_facts()], indent=4),
             actions=json.dumps([a.model_dump() for a in self.state.rule_engine.get_actions()], indent=4),
             rules=json.dumps([r.model_dump() for r in self.state.rule_engine.get_rules()], indent=4),
+            processes=json.dumps([p.model_dump() for p in self.state.rule_engine.get_processes()], indent=4),
         )
 
     def chat_with_user(self, *args, **kwargs):
@@ -156,6 +178,7 @@ class RuleEngineCreatorAgent(WorkflowEngine):
                 extract_and_upsert_facts.schema,
                 extract_and_upsert_actions.schema,
                 extract_and_upsert_rules.schema,
+                extract_and_upsert_processes.schema,
             ],
         )
 
@@ -182,7 +205,7 @@ class RuleEngineCreatorAgent(WorkflowEngine):
                 print(f"@@@@ TOOL CALL: {function_name}({arguments})", "\n\n")
 
                 related_messages_history = []
-                for msg in self.state.messages_history[-10:]:
+                for msg in self.state.messages_history[-50:]:
                     if "tool_calls" not in msg and msg["role"] != "tool":
                         related_messages_history.append(msg)
 
@@ -190,50 +213,40 @@ class RuleEngineCreatorAgent(WorkflowEngine):
                     yield StreamResult(
                         chunk="\n\nAdding/Updating entities...this may take a while!\n\n", is_complete=False
                     )
-
-                    related_messages_history.append({"role": "assistant", "content": arguments["message"]})
-                    self.state.rule_engine.extract_and_upsert_entity(related_messages_history)
-
-                    function_response = extract_and_upsert_entity(message=arguments["message"]).execute()
-
+                    function_response = self.state.rule_engine.extract_and_upsert_entity(related_messages_history)
                 elif function_name == "extract_and_upsert_facts":
                     yield StreamResult(
                         chunk="\n\nAdding/Updating facts...this may take a while!\n\n", is_complete=False
                     )
-
-                    related_messages_history.append({"role": "assistant", "content": arguments["message"]})
-                    self.state.rule_engine.extract_and_upsert_facts(related_messages_history)
-
-                    function_response = extract_and_upsert_facts(message=arguments["message"]).execute()
+                    function_response = self.state.rule_engine.extract_and_upsert_facts(related_messages_history)
                 elif function_name == "extract_and_upsert_actions":
                     yield StreamResult(
                         chunk="\n\nAdding/Updating actions...this may take a while!\n\n", is_complete=False
                     )
 
-                    related_messages_history.append({"role": "assistant", "content": arguments["message"]})
-                    self.state.rule_engine.extract_and_upsert_actions(related_messages_history)
-
-                    function_response = extract_and_upsert_actions(message=arguments["message"]).execute()
+                    function_response = self.state.rule_engine.extract_and_upsert_actions(related_messages_history)
                 elif function_name == "extract_and_upsert_rules":
                     yield StreamResult(
                         chunk="\n\nAdding/Updating rules...this may take a while!\n\n", is_complete=False
                     )
 
-                    related_messages_history.append({"role": "assistant", "content": arguments["message"]})
-                    self.state.rule_engine.extract_and_upsert_rules(related_messages_history)
-
-                    function_response = extract_and_upsert_rules(message=arguments["message"]).execute()
+                    function_response = self.state.rule_engine.extract_and_upsert_rules(related_messages_history)
+                elif function_name == "extract_and_upsert_processes":
+                    yield StreamResult(
+                        chunk="\n\nAdding/Updating processes...this may take a while!\n\n", is_complete=False
+                    )
+                    function_response = self.state.rule_engine.extract_and_upsert_processes(related_messages_history)
                 else:
-                    raise ValueError(f"Unknown function {function_name}")
+                    yield StreamResult(chunk=f"Unknown function {function_name} was called!\n\n", is_complete=False)
+                    function_response = f"Unknown function {function_name} was called! try again!"
 
                 self.state.messages_history.append(
-                    {"role": "tool", "tool_call_id": tool_call["id"], "content": function_response}
+                    {"role": "tool", "tool_call_id": tool_call["id"], "content": json.dumps(function_response)}
                 )
-                # self.state.rule_engine.insert_message(state.messages_history[-1])
 
             llm_response = stream_llm(
                 system_prompt=system_prompt,
-                user_prompt=f"Give a summary of the recent tool calls ralted to {tool_calls} results for the user",
+                user_prompt=f"Give a summary of the recent tool calls ralted to {tool_calls} results for the user. If there are any errors, mention them in the summary and offer suggestions to the user to fix them.",
                 messages_history=state.messages_history,
             )
 

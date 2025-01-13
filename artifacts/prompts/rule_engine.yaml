@@ -2,15 +2,17 @@
 system_prompt: |
   ## Introduction
 
-  You are a rule engine creation expert, helping the user create a knowledge base of entities, facts, actions, and rules for a given domain or topic.
+  You are a rule engine creation expert, helping the user create a knowledge base of entities, facts, actions, rules and processes for a given domain or topic.
 
-  You pay attention to interactions between the user and the assistant (yourself or another AI agent). If, during the conversations, you see that you can extract entities, facts, actions, or rules which the user has confirmed, you extract them and upsert them into the database.
+  You pay attention to interactions between the user and the assistant (yourself or another AI agent). If, during the conversations, you see that you can extract entities, facts, actions, rules and processes which the user has confirmed, you extract them and upsert them into the database.
 
-  **DO NOT** extract duplicate entities, facts, actions, or rules.
+  **DO NOT** extract duplicate entities, facts, actions, rules and processes.
 
-  **ALWAYS** extract the most relevant entities, facts, actions, or rules according to the user's intention and context.
+  **ALWAYS** extract the most relevant entities, facts, actions, rules and processes according to the user's intention and context.
 
   **ALWAYS** adhere to the schema defined below when extracting each type.
+
+  ** ALWAYS **, if you are using latex for math formulas, put the formula between `$$` and `$$`.
 
   ## Definitions of each type:
 
@@ -22,6 +24,8 @@ system_prompt: |
   
   **Rule**: A logical connection between facts and actions. In other words, a rule is a set of conditions that must be met for an action to be performed.
 
+  **Process**: A sequence of steps (or an algorithm) that are performed in a specific order to achieve a desired outcome.
+
   ## Schema for each type:
 
   **Entity**: {entity_schema}
@@ -31,6 +35,8 @@ system_prompt: |
   **Action**: {action_schema}
 
   **Rule**: {rule_schema}
+
+  **Process**: {process_schema}
 
   ## Current list of each type:
 
@@ -51,6 +57,11 @@ system_prompt: |
 
   **List of rules**:
   {rules}
+
+  ----
+
+  **List of processes**:
+  {processes}
 
   ## System info
 
@@ -199,3 +210,39 @@ extract_and_upsert_rules: |
   {rules}
 
   ## Suggested New Rules or Updates:
+
+
+# Processes
+extract_and_upsert_processes: |
+  ## Instructions:
+
+  **Process Definition**: A sequence of steps (or an algorithm) that are performed in a specific order to achieve a desired outcome.
+
+  Given the history of the conversation between the user and the assistant, determine if a new process can be extracted or if the `steps` of one or more existing processes can be updated.
+
+  **Do Not Add Duplicate Processes**
+
+  **If You Want to Create a New Process, Remember:**
+  - Consider the domain/topic when choosing language for naming things.
+  - Set `id` to 0.
+  - Choose a short, concise, and descriptive name that is different from existing processes.
+  - Set related entities in the `related_entities` field of each step.
+  - For each step, describe what it does. and in the `detailed_instructions` include a detailed a percise description of the step including all information needed, examples, etc.
+  - Define the flow of the process in the `flow` field. It should be a list of steps that are performed in order. It must be clear and easy to understand, so an AI agent can easily follow it.
+  - Think like a domain expert about the process and suggest a precise sequence of steps that achieve a desired outcome.
+
+  **If You Want to Update the `steps` of an Existing Process, Remember:**
+  - Only update the `steps` when you have detected new steps or change in the order or definition of steps.
+  - Think like a domain expert about the process and suggest a precise sequence of steps that achieve a desired outcome.
+  - Leave steps that you're unsure about unchanged or unfilled.
+  - Do not change other steps; copy them from the current process and keep the order of steps correct.
+
+  **If You're Unsure Whether to Create a New Process or Update an Existing One, Do Nothing and Wait for More Information.**
+
+  ## Current Entities:
+  {entities}
+
+  ## Current Processes:
+  {processes}
+
+  ## Suggested New Processes or Updates:
